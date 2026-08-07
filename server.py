@@ -26,10 +26,14 @@ HTTP_SOURCES = [
     "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&protocol=http&timeout=3000",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTP_RAW.txt",
 ]
 SOCKS5_SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
 ]
 
 
@@ -68,56 +72,6 @@ class ProxyPool:
         self._checking = False
         self._lock = asyncio.Lock()
 
-    async def _fetch_list(self, sources: list[str], tag: str) -> list[str]:
-        out = []
-        timeout = aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            for url in sources:
-                try:
-                    async with s.get(url) as r:
-                        if r.status == 200:
-                            text = await r.text()
-                            for line in text.splitlines():
-                                line = line.strip()
-                                if not line or line.startswith("#"):
-                                    continue
-                                if "://" in line:
-                                    line = line.split("://", 1)[1]
-                                parts = line.split(":")
-                                if len(parts) >= 2:
-                                    ip, port = parts[0].strip(), parts[1].strip()
-                                    if self._valid_ip(ip) and port.isdigit():
-                                        p = f"http://{ip}:{port}"
-                                        if p not in out:
-                                            out.append(p)
-                except Exception as e:
-                    logger.warning("%s fetch err %s: %s", tag, url[:30], e)
-        return out
-
-    async def _fetch_socks5(self) -> list[str]:
-        out = []
-        timeout = aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            for url in SOCKS5_SOURCES:
-                try:
-                    async with s.get(url) as r:
-                        if r.status == 200:
-                            text = await r.text()
-                            for line in text.splitlines():
-                                line = line.strip()
-                                if not line or line.startswith("#"):
-                                    continue
-                                parts = line.split(":")
-                                if len(parts) >= 2:
-                                    ip, port = parts[0].strip(), parts[1].strip()
-                                    if self._valid_ip(ip) and port.isdigit():
-                                        p = f"socks5://{ip}:{port}"
-                                        if p not in out:
-                                            out.append(p)
-                except Exception as e:
-                    logger.warning("socks5 fetch err %s: %s", url[:30], e)
-        return out
-
     @staticmethod
     def _valid_ip(ip: str) -> bool:
         parts = ip.split(".")
@@ -128,12 +82,44 @@ class ProxyPool:
         except ValueError:
             return False
 
+    def _parse_lines(self, text: str, prefix: str) -> list[str]:
+        out = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            if "://" in line:
+                line = line.split("://", 1)[1]
+            line = line.split("#")[0].strip()
+            parts = line.split(":")
+            if len(parts) >= 2:
+                ip, port = parts[0].strip(), parts[1].strip().split()[0] if parts[1].strip() else ""
+                if self._valid_ip(ip) and port.isdigit() and 1 <= int(port) <= 65535:
+                    p = f"{prefix}{ip}:{port}"
+                    if p not in out:
+                        out.append(p)
+        return out
+
+    async def _fetch(self, sources: list[str], prefix: str) -> list[str]:
+        out = []
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "Mozilla/5.0"}) as s:
+            for url in sources:
+                try:
+                    async with s.get(url) as r:
+                        if r.status == 200:
+                            text = await r.text()
+                            out.extend(self._parse_lines(text, prefix))
+                except Exception:
+                    pass
+        return out
+
     async def _check_http(self, proxy: str) -> tuple[bool, float]:
         try:
             t0 = time.time()
-            timeout = aiohttp.ClientTimeout(total=3)
+            timeout = aiohttp.ClientTimeout(total=5)
             async with aiohttp.ClientSession(timeout=timeout) as s:
-                async with s.get("http://httpbin.org/ip", proxy=proxy) as r:
+                async with s.get("http://httpbin.org/ip", proxy=proxy, ssl=False) as r:
                     lat = (time.time() - t0) * 1000
                     return (True, lat) if r.status == 200 else (False, 9999)
         except Exception:
@@ -144,23 +130,23 @@ class ProxyPool:
             hp = proxy.split("://")[1]
             h, p = hp.split(":")[0], int(hp.split(":")[1])
             t0 = time.time()
-            rd, wr = await asyncio.wait_for(asyncio.open_connection(h, p), timeout=3)
+            rd, wr = await asyncio.wait_for(asyncio.open_connection(h, p), timeout=5)
             wr.write(b"\x05\x01\x00")
             await wr.drain()
-            resp = await asyncio.wait_for(rd.read(2), timeout=3)
+            resp = await asyncio.wait_for(rd.read(2), timeout=5)
             lat = (time.time() - t0) * 1000
             wr.close()
             await wr.wait_closed()
-            if resp and resp[0] == 0x05 and resp[1] == 0x00:
+            if resp and len(resp) >= 2 and resp[0] == 0x05 and resp[1] == 0x00:
                 return True, lat
         except Exception:
             pass
         return False, 9999
 
-    async def _batch_check(self, proxies: list[str], is_socks: bool, sem: asyncio.Semaphore) -> list[str]:
+    async def _batch(self, proxies: list[str], check_fn, sem: asyncio.Semaphore) -> list[str]:
         async def one(p):
             async with sem:
-                ok, lat = await (self._check_socks(p) if is_socks else self._check_http(p))
+                ok, lat = await check_fn(p)
                 if ok:
                     self.latency[p] = lat
                 return p if ok else None
@@ -174,21 +160,20 @@ class ProxyPool:
                 return
             self._checking = True
         try:
-            http_raw = await self._fetch_list(HTTP_SOURCES, "http")
-            socks_raw = await self._fetch_socks5()
+            http_raw = await self._fetch(HTTP_SOURCES, "http://")
+            socks_raw = await self._fetch(SOCKS5_SOURCES, "socks5://")
             logger.info("Fetched %d HTTP, %d SOCKS5", len(http_raw), len(socks_raw))
 
             sem_h = asyncio.Semaphore(200)
             sem_s = asyncio.Semaphore(100)
             http_alive, socks_alive = await asyncio.gather(
-                self._batch_check(http_raw, False, sem_h),
-                self._batch_check(socks_raw, True, sem_s),
+                self._batch(http_raw, self._check_http, sem_h),
+                self._batch(socks_raw, self._check_socks, sem_s),
             )
-
             self.http = sorted(http_alive, key=lambda x: self.latency.get(x, 9999))
             self.socks5 = sorted(socks_alive, key=lambda x: self.latency.get(x, 9999))
             self._last_fetch = time.time()
-            logger.info("Pool: %d HTTP, %d SOCKS5 alive", len(self.http), len(self.socks5))
+            logger.info("Pool alive: %d HTTP, %d SOCKS5", len(self.http), len(self.socks5))
         except Exception as e:
             logger.error("Refresh error: %s", e)
         finally:
@@ -218,9 +203,10 @@ class ProxyPool:
             self.latency.pop(p, None)
             if p in self.http:
                 self.http.remove(p)
+                logger.info("Dead HTTP removed: %s (pool: %d HTTP)", p, len(self.http))
             if p in self.socks5:
                 self.socks5.remove(p)
-            logger.info("Dead removed: %s (pool: %d)", p, self.size)
+                logger.info("Dead SOCKS5 removed: %s (pool: %d SOCKS5)", p, len(self.socks5))
 
     async def loop(self):
         while True:
@@ -274,7 +260,26 @@ def auth_basic(user: str, pwd: str) -> bool:
     return user in users and users[user].get("enabled", True) and users[user]["password"] == pwd
 
 
-# ─── Utilities ────────────────────────────────────────────────────────────────
+def extract_auth(request: web.Request) -> Optional[str]:
+    auth = request.headers.get("Proxy-Authorization", "")
+    if not auth.startswith("Basic "):
+        return None
+    try:
+        decoded = base64.b64decode(auth[6:]).decode()
+        u, p = decoded.split(":", 1)
+        if auth_basic(u, p):
+            return u
+    except Exception:
+        pass
+    return None
+
+
+def unauthorized():
+    return web.Response(
+        status=407, text="Proxy Authentication Required",
+        headers={"Proxy-Authenticate": 'Basic realm="Proxy"'},
+    )
+
 
 async def pipe(r, w):
     try:
@@ -288,132 +293,107 @@ async def pipe(r, w):
         pass
 
 
-def http_response(status: int, text: str, extra_headers: dict | None = None) -> bytes:
-    hdrs = f"HTTP/1.1 {status} OK\r\n" if status == 200 else f"HTTP/1.1 {status} Error\r\n"
-    hdrs += "Connection: close\r\n"
-    if extra_headers:
-        for k, v in extra_headers.items():
-            hdrs += f"{k}: {v}\r\n"
-    body = text.encode()
-    hdrs += f"Content-Length: {len(body)}\r\n\r\n"
-    return hdrs.encode() + body
+# ─── HTTP Handlers (aiohttp) ──────────────────────────────────────────────────
 
+async def handle_connect(request: web.Request) -> web.StreamResponse:
+    username = extract_auth(request)
+    if not username:
+        return unauthorized()
 
-# ─── HTTP Request Parser ──────────────────────────────────────────────────────
+    target = request.path.strip("/")
+    if ":" not in target:
+        return web.Response(status=400, text="Invalid CONNECT target")
+    host, port_s = target.rsplit(":", 1)
+    port = int(port_s)
 
-async def parse_http_request(reader: asyncio.StreamReader) -> dict:
-    line = await asyncio.wait_for(reader.readline(), timeout=10)
-    parts = line.decode(errors="ignore").strip().split(" ")
-    if len(parts) < 3:
-        return {}
-
-    method, path, version = parts[0], parts[1], parts[2]
-    headers = {}
-    while True:
-        hline = await asyncio.wait_for(reader.readline(), timeout=5)
-        hline_str = hline.decode(errors="ignore").strip()
-        if not hline_str:
-            break
-        if ": " in hline_str:
-            k, v = hline_str.split(": ", 1)
-            headers[k] = v
-
-    content_length = int(headers.get("Content-Length", "0"))
-    body = b""
-    if content_length > 0:
-        body = await asyncio.wait_for(reader.readexactly(content_length), timeout=10)
-
-    return {"method": method, "path": path, "version": version, "headers": headers, "body": body}
-
-
-# ─── HTTP CONNECT ─────────────────────────────────────────────────────────────
-
-async def do_connect(user: str, host: str, port: int, client_writer: asyncio.StreamWriter):
-    uidx = users.get(user, {}).get("upstream_index", 0)
+    uidx = users.get(username, {}).get("upstream_index", 0)
     upstream = pool.get_http(uidx)
     if not upstream:
-        stats.rec(user, False)
-        client_writer.write(http_response(503, "No upstream proxies"))
-        await client_writer.drain()
-        client_writer.close()
-        return
+        stats.rec(username, False)
+        return web.Response(status=503, text="No upstream proxies available")
 
-    logger.info("[%s] CONNECT %s:%d via %s", user, host, port, upstream)
-
-    up_host = upstream.split("://")[1].split(":")[0]
-    up_port = int(upstream.split("://")[1].split(":")[1])
-    proxy_writer = None
+    logger.info("[%s] CONNECT %s:%d via %s", username, host, port, upstream)
+    pw = None
     try:
-        proxy_reader, proxy_writer = await asyncio.wait_for(
-            asyncio.open_connection(up_host, up_port), timeout=5
-        )
-        proxy_writer.write(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
-        await proxy_writer.drain()
-        status = await asyncio.wait_for(proxy_reader.readline(), timeout=5)
+        uh = upstream.split("://")[1].split(":")[0]
+        up = int(upstream.split("://")[1].split(":")[1])
+        pr, pw = await asyncio.wait_for(asyncio.open_connection(uh, up), timeout=5)
+        pw.write(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        await pw.drain()
+        status = await asyncio.wait_for(pr.readline(), timeout=5)
         if b"200" not in status:
-            proxy_writer.close()
-            stats.rec(user, False)
+            pw.close()
+            stats.rec(username, False)
             await pool.mark_dead(upstream)
-            client_writer.write(http_response(502, "Upstream CONNECT failed"))
-            await client_writer.drain()
-            client_writer.close()
-            return
+            return web.Response(status=502, text="Upstream CONNECT rejected")
+    except asyncio.TimeoutError:
+        stats.rec(username, False)
+        await pool.mark_dead(upstream)
+        if pw:
+            pw.close()
+        return web.Response(status=502, text="Upstream timeout")
     except Exception as e:
-        stats.rec(user, False)
-        if upstream:
-            await pool.mark_dead(upstream)
-        if proxy_writer:
-            proxy_writer.close()
-        client_writer.write(http_response(502, f"Upstream error: {e}"))
-        await client_writer.drain()
-        client_writer.close()
-        return
+        stats.rec(username, False)
+        await pool.mark_dead(upstream)
+        if pw:
+            pw.close()
+        return web.Response(status=502, text=str(e))
 
-    client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-    await client_writer.drain()
+    transport = request.transport
+    if transport is None:
+        pw.close()
+        stats.rec(username, False)
+        return web.Response(status=500, text="No transport")
 
-    stats.rec(user, True)
+    response = web.StreamResponse(status=200)
+    response.force_close()
+    await response.prepare(request)
+
     try:
-        await asyncio.gather(
-            pipe(proxy_reader, client_writer),
-            pipe(client_writer, proxy_writer),
-            return_exceptions=True,
-        )
+        await asyncio.gather(pipe(pr, transport), pipe(transport, pw), return_exceptions=True)
     except Exception:
         pass
-    proxy_writer.close()
+    pw.close()
+    stats.rec(username, True)
+    return response
 
 
-# ─── HTTP Forward ─────────────────────────────────────────────────────────────
+async def handle_forward(request: web.Request) -> web.StreamResponse:
+    username = extract_auth(request)
+    if not username:
+        return unauthorized()
 
-async def do_forward(user: str, method: str, url: str, headers: dict, body: bytes):
-    uidx = users.get(user, {}).get("upstream_index", 0)
+    url = str(request.url)
+    uidx = users.get(username, {}).get("upstream_index", 0)
     upstream = pool.get_http(uidx)
-    logger.info("[%s] %s %s via %s", user, method, url[:80], upstream or "direct")
+    logger.info("[%s] %s %s via %s", username, request.method, url[:80], upstream or "direct")
+
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            hdrs = {k: v for k, v in headers.items()
-                    if k.lower() not in ("host", "proxy-connection", "proxy-authorization", "content-length")}
+            body = await request.read()
+            hdrs = {k: v for k, v in request.headers.items()
+                    if k.lower() not in ("host", "proxy-connection", "proxy-authorization")}
             hdrs["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-            async with session.request(method=method, url=url, headers=hdrs,
-                                       data=body if body else None, proxy=upstream, allow_redirects=False) as resp:
+            async with session.request(
+                method=request.method, url=url, headers=hdrs,
+                data=body if body else None, proxy=upstream, allow_redirects=False,
+            ) as resp:
                 rb = await resp.read()
                 rh = {k: v for k, v in resp.headers.items() if k.lower() not in ("transfer-encoding", "connection")}
-                stats.rec(user, resp.status < 400)
-                return resp.status, rh, rb
+                stats.rec(username, resp.status < 400)
+                return web.Response(status=resp.status, headers=rh, body=rb)
     except Exception as e:
-        stats.rec(user, False)
+        stats.rec(username, False)
         if upstream:
             await pool.mark_dead(upstream)
-        return 502, {}, f"Forward error: {e}".encode()
+        return web.Response(status=502, text=f"Forward error: {e}")
 
 
-# ─── API JSON Handlers ────────────────────────────────────────────────────────
+# ─── API ──────────────────────────────────────────────────────────────────────
 
-async def api_create_user(data: dict) -> tuple[int, dict]:
-    cu = data.get("username", "")
-    cp = data.get("password", "")
+async def api_create(data: dict) -> tuple[int, dict]:
+    cu, cp = data.get("username", ""), data.get("password", "")
     if cu and cp:
         if cu in users:
             return 409, {"error": "User already exists"}
@@ -434,11 +414,12 @@ async def api_create_user(data: dict) -> tuple[int, dict]:
     return 200, {
         "status": "ok", "username": cu, "password": cp,
         "ip": h.split(":")[0], "port": port, "exit_ip": ex, "socks_exit_ip": sex, "latency": round(lat, 1),
-        "proxy_http": f"http://{cu}:{cp}@{h}", "proxy_socks5": f"socks5://{cu}:{cp}@{h}",
+        "proxy_http": f"http://{cu}:{cp}@{h}",
+        "proxy_socks5": f"socks5://{cu}:{cp}@{h}",
     }
 
 
-async def api_list_users() -> tuple[int, dict]:
+async def api_list() -> tuple[int, dict]:
     h = get_hostname()
     port = h.split(":")[-1] if ":" in h else "443"
     ul = []
@@ -460,49 +441,9 @@ async def api_list_users() -> tuple[int, dict]:
     return 200, {"status": "ok", "users": ul, "total": len(ul)}
 
 
-async def api_delete_user(username: str) -> tuple[int, dict]:
-    if username not in users:
-        return 404, {"error": "User not found"}
-    del users[username]
-    save_users(users)
-    return 200, {"status": "ok", "deleted": username}
+# ─── SOCKS4/5 raw TCP server (same port via protocol sniffing) ───────────────
 
-
-async def api_toggle_user(username: str) -> tuple[int, dict]:
-    if username not in users:
-        return 404, {"error": "User not found"}
-    users[username]["enabled"] = not users[username].get("enabled", True)
-    save_users(users)
-    return 200, {"status": "ok", "username": username, "enabled": users[username]["enabled"]}
-
-
-async def api_rotate_user(username: str) -> tuple[int, dict]:
-    if username not in users:
-        return 404, {"error": "User not found"}
-    if pool.size == 0:
-        return 503, {"error": "No proxies in pool"}
-    idx = random.randint(0, pool.size - 1)
-    users[username]["upstream_index"] = idx
-    save_users(users)
-    up = pool.get_http(idx)
-    ex = pool.exit_ip(up) if up else "N/A"
-    lat = pool.get_lat(up) if up else 0
-    sup = pool.get_socks5(idx)
-    sex = pool.exit_ip(sup) if sup else "N/A"
-    return 200, {"status": "ok", "username": username, "exit_ip": ex, "socks_exit_ip": sex, "latency": round(lat, 1)}
-
-
-async def api_pool() -> dict:
-    return {"status": "ok", "pool_size": pool.size, "http_pool": len(pool.http), "socks5_pool": len(pool.socks5), "last_fetch": pool._last_fetch}
-
-
-async def api_stats() -> dict:
-    return {"status": "ok", "pool_size": pool.size, "http_pool": len(pool.http), "socks5_pool": len(pool.socks5), **stats.to_dict()}
-
-
-# ─── SOCKS5 ───────────────────────────────────────────────────────────────────
-
-async def handle_socks5(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr):
+async def handle_socks5(reader, writer, addr):
     username = None
     try:
         hdr = await asyncio.wait_for(reader.read(2), timeout=5)
@@ -560,7 +501,7 @@ async def handle_socks5(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
         port = struct.unpack(">H", await asyncio.wait_for(reader.read(2), timeout=5))[0]
         su = username or "socks5-anon"
-        logger.info("[SOCKS5] %s CONNECT %s:%d", su, host, port)
+        logger.info("[SOCKS5] %s -> %s:%d", su, host, port)
 
         uidx = users.get(username, {}).get("upstream_index", 0) if username else 0
         upstream = pool.get_socks5(uidx)
@@ -578,15 +519,14 @@ async def handle_socks5(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 resp = await asyncio.wait_for(rr.read(10), timeout=5)
                 if len(resp) < 2 or resp[1] != 0:
                     rw.close()
-                    raise Exception("upstream socks5 failed")
+                    raise Exception("upstream socks5 rejected")
                 writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
                 await writer.drain()
                 await asyncio.gather(pipe(reader, rw), pipe(rr, writer), return_exceptions=True)
                 rw.close()
                 stats.rec(su, True)
                 return
-            except Exception as e:
-                logger.warning("socks5 upstream err: %s", e)
+            except Exception:
                 if upstream:
                     await pool.mark_dead(upstream)
 
@@ -602,22 +542,14 @@ async def handle_socks5(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             await writer.drain()
             writer.close()
             stats.rec(su, False)
-    except asyncio.TimeoutError:
-        try:
-            writer.close()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.warning("socks5 err %s: %s", addr, e)
+    except Exception:
         try:
             writer.close()
         except Exception:
             pass
 
 
-# ─── SOCKS4 ───────────────────────────────────────────────────────────────────
-
-async def handle_socks4(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr):
+async def handle_socks4(reader, writer, addr):
     try:
         hdr = await asyncio.wait_for(reader.read(8), timeout=5)
         if len(hdr) < 8 or hdr[0] != 0x04:
@@ -626,7 +558,6 @@ async def handle_socks4(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         cmd, port = hdr[1], struct.unpack(">H", hdr[2:4])[0]
         ip = hdr[4:8]
         host = socket.inet_ntoa(ip)
-
         udbuf = b""
         while True:
             b = await asyncio.wait_for(reader.read(1), timeout=5)
@@ -634,14 +565,11 @@ async def handle_socks4(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 break
             udbuf += b
         username = udbuf.decode(errors="ignore").strip()
-
         if cmd != 1:
             writer.close()
             return
-
         su = username or "socks4-anon"
-        logger.info("[SOCKS4] %s CONNECT %s:%d", su, host, port)
-
+        logger.info("[SOCKS4] %s -> %s:%d", su, host, port)
         try:
             rr, rw = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
             writer.write(struct.pack(">BBH", 0, 0x5A, port) + ip)
@@ -654,157 +582,14 @@ async def handle_socks4(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             await writer.drain()
             writer.close()
             stats.rec(su, False)
-    except asyncio.TimeoutError:
-        try:
-            writer.close()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.warning("socks4 err %s: %s", addr, e)
+    except Exception:
         try:
             writer.close()
         except Exception:
             pass
 
 
-# ─── HTTP Handler (via raw TCP) ───────────────────────────────────────────────
-
-async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr):
-    try:
-        req = await parse_http_request(reader)
-        if not req:
-            writer.close()
-            return
-
-        method = req["method"]
-        path = req["path"]
-        headers = req["headers"]
-        body = req["body"]
-
-        # ── Auth ──
-        auth_header = headers.get("Proxy-Authorization", "")
-        username = None
-        if auth_header.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(auth_header[6:]).decode()
-                u, p = decoded.split(":", 1)
-                if auth_basic(u, p):
-                    username = u
-            except Exception:
-                pass
-
-        # ── CONNECT ──
-        if method == "CONNECT":
-            if not username:
-                writer.write(http_response(407, "Proxy Auth Required", {"Proxy-Authenticate": 'Basic realm="Proxy"'}))
-                await writer.drain()
-                writer.close()
-                return
-            target = path.strip("/")
-            if ":" not in target:
-                writer.write(http_response(400, "Invalid target"))
-                await writer.drain()
-                writer.close()
-                return
-            host, port_s = target.rsplit(":", 1)
-            await do_connect(username, host, int(port_s), writer)
-            return
-
-        # ── API routes ──
-        if path.startswith("/api/"):
-            admin = headers.get("Authorization", "") == f"Bearer {ADMIN_KEY}"
-            if not admin and path != "/api/stats":
-                writer.write(http_response(401, json.dumps({"error": "Unauthorized"}), {"Content-Type": "application/json"}))
-                await writer.drain()
-                writer.close()
-                return
-
-            status_code = 200
-            resp_body = {}
-
-            if path == "/api/users" and method == "GET":
-                status_code, resp_body = await api_list_users()
-            elif path == "/api/users" and method == "POST":
-                status_code, resp_body = await api_create_user(json.loads(body) if body else {})
-            elif path.startswith("/api/users/") and method == "DELETE":
-                uname = path.split("/api/users/")[1].split("/")[0].split("?")[0]
-                status_code, resp_body = await api_delete_user(uname)
-            elif path.endswith("/toggle") and method == "POST":
-                uname = path.split("/api/users/")[1].split("/")[0]
-                status_code, resp_body = await api_toggle_user(uname)
-            elif path.endswith("/rotate") and method == "POST":
-                uname = path.split("/api/users/")[1].split("/")[0]
-                status_code, resp_body = await api_rotate_user(uname)
-            elif path == "/api/pool":
-                resp_body = await api_pool()
-            elif path == "/api/stats":
-                resp_body = await api_stats()
-            else:
-                status_code = 404
-                resp_body = {"error": "Not found"}
-
-            data = json.dumps(resp_body).encode()
-            writer.write(f"HTTP/1.1 {status_code} OK\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode())
-            writer.write(data)
-            await writer.drain()
-            writer.close()
-            return
-
-        # ── Dashboard ──
-        if path == "/" or path == "/index.html":
-            try:
-                html = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
-                data = html.encode()
-                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode())
-                writer.write(data)
-            except Exception:
-                writer.write(http_response(404, "Dashboard not found"))
-            await writer.drain()
-            writer.close()
-            return
-
-        # ── Health ──
-        if path == "/health":
-            data = json.dumps({"status": "ok"}).encode()
-            writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode())
-            writer.write(data)
-            await writer.drain()
-            writer.close()
-            return
-
-        # ── Forward ──
-        if not username:
-            writer.write(http_response(407, "Proxy Auth Required", {"Proxy-Authenticate": 'Basic realm="Proxy"'}))
-            await writer.drain()
-            writer.close()
-            return
-
-        full_url = path if path.startswith("http") else f"http://{headers.get('Host', 'localhost')}{path}"
-        sc, sh, sb = await do_forward(username, method, full_url, headers, body)
-
-        hdr_lines = f"HTTP/1.1 {sc} OK\r\nConnection: close\r\n"
-        for k, v in sh.items():
-            hdr_lines += f"{k}: {v}\r\n"
-        hdr_lines += f"Content-Length: {len(sb)}\r\n\r\n"
-        writer.write(hdr_lines.encode())
-        writer.write(sb)
-        await writer.drain()
-        writer.close()
-
-    except asyncio.TimeoutError:
-        try:
-            writer.close()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.warning("http err %s: %s", addr, e)
-        try:
-            writer.close()
-        except Exception:
-            pass
-
-
-# ─── Single-Port Protocol Router ──────────────────────────────────────────────
+# ─── Single-port protocol router ──────────────────────────────────────────────
 
 async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     addr = writer.get_extra_info("peername")
@@ -814,14 +599,18 @@ async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             writer.close()
             return
 
-        if first[0] == 0x05:
+        b = first[0]
+        if b == 0x05:
+            logger.debug("SOCKS5 from %s", addr)
             await handle_socks5(reader, writer, addr)
-        elif first[0] == 0x04:
+        elif b == 0x04:
+            logger.debug("SOCKS4 from %s", addr)
             await handle_socks4(reader, writer, addr)
-        elif first[0] >= 0x20 and first[0] < 0x7F:
-            await handle_http_protocol(reader, writer, addr, first)
+        elif 0x20 <= b < 0x7F:
+            logger.debug("HTTP from %s", addr)
+            await route_http(reader, writer, addr, first)
         else:
-            logger.warning("Unknown protocol byte 0x%02x from %s", first[0], addr)
+            logger.warning("Unknown proto 0x%02x from %s", b, addr)
             writer.close()
     except asyncio.TimeoutError:
         try:
@@ -836,48 +625,44 @@ async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             pass
 
 
-async def handle_http_protocol(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr, first_byte: bytes):
+async def route_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr, first_byte: bytes):
     try:
-        line_buf = first_byte
-        while True:
-            chunk = await asyncio.wait_for(reader.read(1), timeout=10)
+        buf = first_byte
+        while not buf.endswith(b"\r\n\r\n"):
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=10)
             if not chunk:
                 writer.close()
                 return
-            line_buf += chunk
-            if line_buf.endswith(b"\r\n\r\n"):
-                break
+            buf += chunk
 
-        request_line = line_buf.split(b"\r\n")[0].decode(errors="ignore")
-        parts = request_line.split(" ")
+        header_end = buf.index(b"\r\n\r\n") + 4
+        raw_headers = buf[:header_end].decode(errors="ignore")
+        leftover = buf[header_end:]
+
+        lines = raw_headers.split("\r\n")
+        parts = lines[0].split(" ")
         if len(parts) < 3:
             writer.close()
             return
-
         method, path, version = parts[0], parts[1], parts[2]
-        header_block = line_buf.split(b"\r\n\r\n")[0]
-        header_lines = header_block.split(b"\r\n")[1:]
+
         headers = {}
-        for hl in header_lines:
-            hl_str = hl.decode(errors="ignore")
-            if ": " in hl_str:
-                k, v = hl_str.split(": ", 1)
+        for line in lines[1:]:
+            if ": " in line:
+                k, v = line.split(": ", 1)
                 headers[k] = v
 
         content_length = int(headers.get("Content-Length", "0"))
-        body = b""
-        if content_length > 0:
-            already = len(line_buf.split(b"\r\n\r\n", 1)[1]) if b"\r\n\r\n" in line_buf else 0
-            body = line_buf.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in line_buf else b""
-            remaining = content_length - len(body)
-            if remaining > 0:
-                body += await asyncio.wait_for(reader.readexactly(remaining), timeout=10)
+        body = leftover
+        need = content_length - len(body)
+        if need > 0:
+            body += await asyncio.wait_for(reader.readexactly(need), timeout=10)
 
-        auth_header = headers.get("Proxy-Authorization", "")
         username = None
-        if auth_header.startswith("Basic "):
+        auth = headers.get("Proxy-Authorization", "")
+        if auth.startswith("Basic "):
             try:
-                decoded = base64.b64decode(auth_header[6:]).decode()
+                decoded = base64.b64decode(auth[6:]).decode()
                 u, p = decoded.split(":", 1)
                 if auth_basic(u, p):
                     username = u
@@ -886,55 +671,124 @@ async def handle_http_protocol(reader: asyncio.StreamReader, writer: asyncio.Str
 
         if method == "CONNECT":
             if not username:
-                writer.write(http_response(407, "Proxy Auth Required", {"Proxy-Authenticate": 'Basic realm="Proxy"'}))
+                w = "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Proxy\"\r\nContent-Length: 0\r\n\r\n"
+                writer.write(w.encode())
                 await writer.drain()
                 writer.close()
                 return
             target = path.strip("/")
             if ":" not in target:
-                writer.write(http_response(400, "Invalid target"))
+                writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 writer.close()
                 return
             host, port_s = target.rsplit(":", 1)
-            await do_connect(username, host, int(port_s), writer)
+            port = int(port_s)
+
+            uidx = users.get(username, {}).get("upstream_index", 0)
+            upstream = pool.get_http(uidx)
+            if not upstream:
+                stats.rec(username, False)
+                writer.write(b"HTTP/1.1 503 No Upstream\r\nContent-Length: 0\r\n\r\n")
+                await writer.drain()
+                writer.close()
+                return
+
+            logger.info("[%s] CONNECT %s:%d via %s", username, host, port, upstream)
+            uh = upstream.split("://")[1].split(":")[0]
+            up = int(upstream.split("://")[1].split(":")[1])
+            pw = None
+            try:
+                pr, pw = await asyncio.wait_for(asyncio.open_connection(uh, up), timeout=5)
+                pw.write(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+                await pw.drain()
+                status = await asyncio.wait_for(pr.readline(), timeout=5)
+                if b"200" not in status:
+                    pw.close()
+                    stats.rec(username, False)
+                    await pool.mark_dead(upstream)
+                    writer.write(b"HTTP/1.1 502 Upstream Rejected\r\nContent-Length: 0\r\n\r\n")
+                    await writer.drain()
+                    writer.close()
+                    return
+            except Exception as e:
+                stats.rec(username, False)
+                if upstream:
+                    await pool.mark_dead(upstream)
+                if pw:
+                    pw.close()
+                writer.write(f"HTTP/1.1 502 {e}\r\nContent-Length: 0\r\n\r\n".encode())
+                await writer.drain()
+                writer.close()
+                return
+
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+            stats.rec(username, True)
+            try:
+                await asyncio.gather(pipe(pr, writer), pipe(reader, pw), return_exceptions=True)
+            except Exception:
+                pass
+            pw.close()
             return
 
         if path.startswith("/api/"):
             admin = headers.get("Authorization", "") == f"Bearer {ADMIN_KEY}"
             if not admin and path != "/api/stats":
-                writer.write(http_response(401, json.dumps({"error": "Unauthorized"}), {"Content-Type": "application/json"}))
+                resp = json.dumps({"error": "Unauthorized"}).encode()
+                writer.write(f"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\nConnection: close\r\n\r\n".encode())
+                writer.write(resp)
                 await writer.drain()
                 writer.close()
                 return
 
-            status_code = 200
-            resp_body = {}
-
+            sc, rb = 200, {}
             if path == "/api/users" and method == "GET":
-                status_code, resp_body = await api_list_users()
+                sc, rb = await api_list()
             elif path == "/api/users" and method == "POST":
-                status_code, resp_body = await api_create_user(json.loads(body) if body else {})
+                sc, rb = await api_create(json.loads(body) if body else {})
             elif path.startswith("/api/users/") and method == "DELETE":
-                uname = path.split("/api/users/")[1].split("/")[0].split("?")[0]
-                status_code, resp_body = await api_delete_user(uname)
+                un = path.split("/api/users/")[1].split("/")[0].split("?")[0]
+                if un not in users:
+                    sc, rb = 404, {"error": "Not found"}
+                else:
+                    del users[un]
+                    save_users(users)
+                    sc, rb = 200, {"status": "ok", "deleted": un}
             elif path.endswith("/toggle") and method == "POST":
-                uname = path.split("/api/users/")[1].split("/")[0]
-                status_code, resp_body = await api_toggle_user(uname)
+                un = path.split("/api/users/")[1].split("/")[0]
+                if un not in users:
+                    sc, rb = 404, {"error": "Not found"}
+                else:
+                    users[un]["enabled"] = not users[un].get("enabled", True)
+                    save_users(users)
+                    sc, rb = 200, {"status": "ok", "username": un, "enabled": users[un]["enabled"]}
             elif path.endswith("/rotate") and method == "POST":
-                uname = path.split("/api/users/")[1].split("/")[0]
-                status_code, resp_body = await api_rotate_user(uname)
+                un = path.split("/api/users/")[1].split("/")[0]
+                if un not in users:
+                    sc, rb = 404, {"error": "Not found"}
+                elif pool.size == 0:
+                    sc, rb = 503, {"error": "No proxies"}
+                else:
+                    idx = random.randint(0, pool.size - 1)
+                    users[un]["upstream_index"] = idx
+                    save_users(users)
+                    up = pool.get_http(idx)
+                    ex = pool.exit_ip(up) if up else "N/A"
+                    sup = pool.get_socks5(idx)
+                    sex = pool.exit_ip(sup) if sup else "N/A"
+                    lat = pool.get_lat(up) if up else 0
+                    sc, rb = 200, {"status": "ok", "exit_ip": ex, "socks_exit_ip": sex, "latency": round(lat, 1)}
             elif path == "/api/pool":
-                resp_body = await api_pool()
+                rb = {"status": "ok", "pool_size": pool.size, "http_pool": len(pool.http), "socks5_pool": len(pool.socks5), "last_fetch": pool._last_fetch}
             elif path == "/api/stats":
-                resp_body = await api_stats()
+                rb = {"status": "ok", "pool_size": pool.size, "http_pool": len(pool.http), "socks5_pool": len(pool.socks5), **stats.to_dict()}
             else:
-                status_code = 404
-                resp_body = {"error": "Not found"}
+                sc, rb = 404, {"error": "Not found"}
 
-            data = json.dumps(resp_body).encode()
-            writer.write(f"HTTP/1.1 {status_code} OK\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode())
-            writer.write(data)
+            resp = json.dumps(rb).encode()
+            writer.write(f"HTTP/1.1 {sc} OK\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\nConnection: close\r\n\r\n".encode())
+            writer.write(resp)
             await writer.drain()
             writer.close()
             return
@@ -946,34 +800,53 @@ async def handle_http_protocol(reader: asyncio.StreamReader, writer: asyncio.Str
                 writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode())
                 writer.write(data)
             except Exception:
-                writer.write(http_response(404, "Dashboard not found"))
+                writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
             await writer.drain()
             writer.close()
             return
 
         if path == "/health":
-            data = json.dumps({"status": "ok"}).encode()
-            writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode())
-            writer.write(data)
+            resp = b'{"status":"ok"}'
+            writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\nConnection: close\r\n\r\n".encode())
+            writer.write(resp)
             await writer.drain()
             writer.close()
             return
 
         if not username:
-            writer.write(http_response(407, "Proxy Auth Required", {"Proxy-Authenticate": 'Basic realm="Proxy"'}))
+            w = "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Proxy\"\r\nContent-Length: 0\r\n\r\n"
+            writer.write(w.encode())
             await writer.drain()
             writer.close()
             return
 
         full_url = path if path.startswith("http") else f"http://{headers.get('Host', 'localhost')}{path}"
-        sc, sh, sb = await do_forward(username, method, full_url, headers, body)
+        uidx = users.get(username, {}).get("upstream_index", 0)
+        upstream = pool.get_http(uidx)
+        logger.info("[%s] %s %s via %s", username, method, full_url[:80], upstream or "direct")
 
-        hdr_lines = f"HTTP/1.1 {sc} OK\r\nConnection: close\r\n"
-        for k, v in sh.items():
-            hdr_lines += f"{k}: {v}\r\n"
-        hdr_lines += f"Content-Length: {len(sb)}\r\n\r\n"
-        writer.write(hdr_lines.encode())
-        writer.write(sb)
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                hdrs = {k: v for k, v in headers.items()
+                        if k.lower() not in ("host", "proxy-connection", "proxy-authorization", "content-length")}
+                hdrs["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+                async with session.request(method=method, url=full_url, headers=hdrs,
+                                           data=body if body else None, proxy=upstream, allow_redirects=False) as resp:
+                    rb = await resp.read()
+                    resp_hdrs = f"HTTP/1.1 {resp.status} OK\r\nConnection: close\r\n"
+                    for k, v in resp.headers.items():
+                        if k.lower() not in ("transfer-encoding", "connection"):
+                            resp_hdrs += f"{k}: {v}\r\n"
+                    resp_hdrs += f"Content-Length: {len(rb)}\r\n\r\n"
+                    writer.write(resp_hdrs.encode())
+                    writer.write(rb)
+                    stats.rec(username, resp.status < 400)
+        except Exception as e:
+            stats.rec(username, False)
+            if upstream:
+                await pool.mark_dead(upstream)
+            writer.write(f"HTTP/1.1 502 {e}\r\nContent-Length: 0\r\n\r\n".encode())
         await writer.drain()
         writer.close()
 
@@ -983,7 +856,7 @@ async def handle_http_protocol(reader: asyncio.StreamReader, writer: asyncio.Str
         except Exception:
             pass
     except Exception as e:
-        logger.warning("http protocol err %s: %s", addr, e)
+        logger.warning("HTTP route err %s: %s", addr, e)
         try:
             writer.close()
         except Exception:
@@ -992,30 +865,22 @@ async def handle_http_protocol(reader: asyncio.StreamReader, writer: asyncio.Str
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-async def on_startup(_app):
+async def main():
+    port = int(os.environ.get("PORT", 8080))
+    logger.info("=" * 50)
+    logger.info("  Multi-Protocol Proxy Server")
+    logger.info("  Single port %d: HTTP+HTTPS+SOCKS4+SOCKS5", port)
+    logger.info("  Admin key: %s", ADMIN_KEY)
+    logger.info("  Hostname: %s", get_hostname())
+    logger.info("=" * 50)
     asyncio.create_task(pool.loop())
+    server = await asyncio.start_server(on_client, "0.0.0.0", port)
+    async with server:
+        await server.serve_forever()
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    logger.info("========================================")
-    logger.info("  Multi-Protocol Proxy Server")
-    logger.info("  Port: %d (HTTP + HTTPS + SOCKS4 + SOCKS5)", port)
-    logger.info("  Admin key: %s", ADMIN_KEY)
-    logger.info("  Hostname: %s", get_hostname())
-    logger.info("========================================")
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    async def main():
-        asyncio.create_task(pool.loop())
-        server = await asyncio.start_server(on_client, "0.0.0.0", port)
-        logger.info("Listening on 0.0.0.0:%d", port)
-        async with server:
-            await server.serve_forever()
-
     try:
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutting down.")
+        pass
