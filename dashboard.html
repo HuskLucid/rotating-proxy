@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Auth Proxy Manager</title>
+    <title>Multi-Protocol Proxy Manager</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }
@@ -11,10 +11,11 @@
         .header h1 { font-size: 22px; color: #00d4ff; }
         .header .sub { font-size: 12px; color: #666; margin-top: 4px; }
         .stats-row { display: flex; gap: 20px; padding: 16px 32px; background: #111118; border-bottom: 1px solid #1a1a3a; flex-wrap: wrap; }
-        .stat { text-align: center; min-width: 100px; }
+        .stat { text-align: center; min-width: 80px; }
         .stat .num { font-size: 28px; font-weight: 700; color: #00ff88; }
         .stat .num.blue { color: #00d4ff; }
         .stat .num.orange { color: #ff8800; }
+        .stat .num.purple { color: #bb86fc; }
         .stat .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
         .section { padding: 20px 32px; }
         .section h2 { font-size: 16px; color: #00d4ff; margin-bottom: 12px; }
@@ -24,8 +25,8 @@
         .btn-green { background: linear-gradient(135deg, #00ff88, #00cc6a); }
         .btn-red { background: linear-gradient(135deg, #ff4444, #cc2222); }
         .btn-orange { background: linear-gradient(135deg, #ff8800, #cc6600); }
-        input { background: #1a1a2e; border: 1px solid #333; color: #e0e0e0; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
-        input:focus { outline: none; border-color: #00d4ff; }
+        input, select { background: #1a1a2e; border: 1px solid #333; color: #e0e0e0; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+        input:focus, select:focus { outline: none; border-color: #00d4ff; }
         table { width: 100%; border-collapse: collapse; }
         th { background: #1a1a2e; padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #888; border-bottom: 2px solid #2a2a4a; }
         td { padding: 10px 14px; border-bottom: 1px solid #1a1a2a; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
@@ -44,6 +45,11 @@
         .del-btn:hover { background: #6a3a3a; }
         .rotate-btn { background: #2a2a4a; border: none; color: #ff8800; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
         .rotate-btn:hover { background: #3a3a5a; }
+        .protocol-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; margin: 1px; }
+        .badge-http { background: #1a3a2a; color: #00ff88; }
+        .badge-https { background: #1a2a3a; color: #00d4ff; }
+        .badge-socks5 { background: #2a1a3a; color: #bb86fc; }
+        .badge-socks4 { background: #3a2a1a; color: #ff8800; }
         .loading { text-align: center; padding: 40px; color: #888; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
         .modal.active { display: flex; }
@@ -55,17 +61,24 @@
         .info-box h3 { color: #00d4ff; margin-bottom: 8px; font-size: 14px; }
         .info-box pre { background: #0a0a0f; padding: 10px; border-radius: 6px; margin-top: 8px; overflow-x: auto; font-size: 12px; color: #aaa; white-space: pre-wrap; word-break: break-all; }
         .admin-key { background: #1a1a2e; border: 1px solid #333; color: #ff8800; padding: 8px 12px; border-radius: 6px; font-size: 13px; width: 300px; }
+        .proto-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+        .proto-tab { background: #1a1a2e; border: 1px solid #333; color: #888; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s; }
+        .proto-tab:hover { border-color: #00d4ff; color: #e0e0e0; }
+        .proto-tab.active { background: #00d4ff; color: #000; border-color: #00d4ff; }
+        .proto-detail { display: none; margin-top: 8px; }
+        .proto-detail.active { display: block; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Auth Proxy Manager</h1>
-        <div class="sub">Each Proxy = Different Exit IP | Fast & Auto-healing</div>
+        <h1>Multi-Protocol Proxy Manager</h1>
+        <div class="sub">HTTP + HTTPS + SOCKS4 + SOCKS5 — All on One Port — Each User Gets Different Exit IP</div>
     </div>
 
     <div class="stats-row">
         <div class="stat"><div class="num" id="userCount">0</div><div class="label">Users</div></div>
-        <div class="stat"><div class="num blue" id="poolSize">0</div><div class="label">Proxy Pool</div></div>
+        <div class="stat"><div class="num blue" id="httpPool">0</div><div class="label">HTTP Pool</div></div>
+        <div class="stat"><div class="num purple" id="socksPool">0</div><div class="label">SOCKS5 Pool</div></div>
         <div class="stat"><div class="num orange" id="totalReqs">0</div><div class="label">Requests</div></div>
         <div class="stat"><div class="num" id="uptime">0h 0m</div><div class="label">Uptime</div></div>
     </div>
@@ -82,13 +95,24 @@
         <div class="controls">
             <button class="btn btn-green" onclick="openCreateModal()">+ Create New Proxy</button>
             <button class="btn" onclick="loadUsers()">Refresh</button>
+            <select id="protocolFilter" onchange="filterTable()" style="margin-left:8px;">
+                <option value="all">All Protocols</option>
+                <option value="http">HTTP Only</option>
+                <option value="https">HTTPS Only</option>
+                <option value="socks5">SOCKS5 Only</option>
+                <option value="socks4">SOCKS4 Only</option>
+            </select>
         </div>
 
         <table>
             <thead>
                 <tr>
                     <th>#</th>
-                    <th>Proxy (ip:port:user:pass)</th>
+                    <th>User</th>
+                    <th>Protocols</th>
+                    <th>HTTP Proxy</th>
+                    <th>SOCKS5 Proxy</th>
+                    <th>SOCKS4 Proxy</th>
                     <th>Exit IP</th>
                     <th>Latency</th>
                     <th>Requests</th>
@@ -97,20 +121,26 @@
                 </tr>
             </thead>
             <tbody id="userTable">
-                <tr><td colspan="7" class="loading">Click "Load Users" to start</td></tr>
+                <tr><td colspan="11" class="loading">Click "Load Users" to start</td></tr>
             </tbody>
         </table>
     </div>
 
     <div class="section">
         <div class="info-box">
-            <h3>How it works</h3>
+            <h3>Supported Protocols</h3>
             <p style="font-size:12px;color:#888;">
-                1. Service fetches <strong>hundreds of fast proxies</strong> from the internet<br>
-                2. Each user gets a <strong>different exit IP</strong> (sorted by latency)<br>
-                3. If a proxy dies, it's <strong>auto-removed</strong> and user gets new one<br>
-                4. Click <strong>"Rotate"</strong> to change exit IP<br>
-                5. Pool auto-refreshes every 3 minutes
+                <span class="protocol-badge badge-http">HTTP</span>
+                <span class="protocol-badge badge-https">HTTPS</span>
+                <span class="protocol-badge badge-socks5">SOCKS5</span>
+                <span class="protocol-badge badge-socks4">SOCKS4</span>
+                <br><br>
+                1. All protocols on <strong>one port</strong> — auto-detected from first bytes<br>
+                2. Each user gets a <strong>different exit IP</strong> per protocol<br>
+                3. HTTP/HTTPS use <strong>Basic Auth</strong>, SOCKS5 uses <strong>User/Pass</strong> auth<br>
+                4. SOCKS4 works without authentication (anonymous)<br>
+                5. Auto-removes dead proxies, refreshes pool every 3 min<br>
+                6. Port 443 on Render (all protocols share it)
             </p>
         </div>
     </div>
@@ -128,9 +158,10 @@
     </div>
 
     <script>
+        var currentUsers = [];
+
         function getHeaders() {
-            var adminKey = document.getElementById('adminKey').value;
-            return { 'Authorization': 'Bearer ' + adminKey, 'Content-Type': 'application/json' };
+            return { 'Authorization': 'Bearer ' + document.getElementById('adminKey').value, 'Content-Type': 'application/json' };
         }
 
         async function loadUsers() {
@@ -138,8 +169,9 @@
                 var resp = await fetch('/api/users', { headers: getHeaders() });
                 var data = await resp.json();
                 if (data.error) { alert('Error: ' + data.error); return; }
-                renderUsers(data.users || []);
+                currentUsers = data.users || [];
                 document.getElementById('userCount').textContent = data.total || 0;
+                filterTable();
             } catch(e) { alert('Failed: ' + e.message); }
         }
 
@@ -148,35 +180,61 @@
                 var resp = await fetch('/api/stats');
                 var data = await resp.json();
                 document.getElementById('totalReqs').textContent = data.total_requests || 0;
-                document.getElementById('poolSize').textContent = data.pool_size || 0;
+                document.getElementById('httpPool').textContent = data.http_pool || 0;
+                document.getElementById('socksPool').textContent = data.socks5_pool || 0;
                 var hrs = Math.floor((data.uptime_seconds || 0) / 3600);
                 var mins = Math.floor(((data.uptime_seconds || 0) % 3600) / 60);
                 document.getElementById('uptime').textContent = hrs + 'h ' + mins + 'm';
             } catch(e) {}
         }
 
-        function renderUsers(userList) {
+        function filterTable() {
+            var filter = document.getElementById('protocolFilter').value;
+            renderUsers(currentUsers, filter);
+        }
+
+        function renderUsers(userList, filter) {
             var tbody = document.getElementById('userTable');
             if (userList.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="loading">No users yet. Create one!</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="11" class="loading">No users yet. Create one!</td></tr>';
                 return;
             }
             tbody.innerHTML = userList.map(function(u, i) {
-                var proxyStr = u.ip + ':443:' + u.username + ':' + u.password;
-                var exitIp = u.exit_ip || 'N/A';
                 var lat = u.latency || 0;
                 var latClass = lat < 500 ? 'fast' : (lat < 1000 ? 'medium' : 'slow');
                 var latText = lat > 0 ? lat.toFixed(0) + 'ms' : '-';
+                var exitIp = u.exit_ip || 'N/A';
+                var socksExit = u.socks_exit_ip || 'N/A';
 
-                return '<tr>' +
+                var httpProxy = u.proxy_http || '';
+                var socks5Proxy = u.proxy_socks5 || '';
+                var socks4Proxy = u.proxy_socks4 || '';
+
+                var showHttp = filter === 'all' || filter === 'http' || filter === 'https';
+                var showSocks5 = filter === 'all' || filter === 'socks5';
+                var showSocks4 = filter === 'all' || filter === 'socks4';
+
+                var protocols = '<span class="protocol-badge badge-http">HTTP</span> ' +
+                    '<span class="protocol-badge badge-https">HTTPS</span> ' +
+                    '<span class="protocol-badge badge-socks5">SOCKS5</span> ' +
+                    '<span class="protocol-badge badge-socks4">SOCKS4</span>';
+
+                var httpCell = showHttp ? '<td class="proxy-str" style="font-size:11px;">' + httpProxy + '</td>' : '';
+                var socks5Cell = showSocks5 ? '<td class="proxy-str" style="font-size:11px;color:#bb86fc;">' + socks5Proxy + '</td>' : '';
+                var socks4Cell = showSocks4 ? '<td style="font-size:11px;color:#ff8800;">' + socks4Proxy + '</td>' : '';
+
+                return '<tr data-user="' + u.username + '">' +
                     '<td>' + (i + 1) + '</td>' +
-                    '<td class="proxy-str">' + proxyStr + '</td>' +
+                    '<td>' + u.username + '</td>' +
+                    '<td>' + protocols + '</td>' +
+                    httpCell + socks5Cell + socks4Cell +
                     '<td class="exit-ip">' + exitIp + '</td>' +
                     '<td class="latency ' + latClass + '">' + latText + '</td>' +
-                    '<td>' + u.requests + '</td>' +
-                    '<td class="' + (u.enabled ? 'enabled' : 'disabled') + '">' + (u.enabled ? 'ACTIVE' : 'DISABLED') + '</td>' +
+                    '<td>' + (u.requests || 0) + '</td>' +
+                    '<td class="' + (u.enabled ? 'enabled' : 'disabled') + '">' + (u.enabled ? 'ACTIVE' : 'OFF') + '</td>' +
                     '<td>' +
-                        '<button class="copy-btn" onclick="copyProxy(\'' + proxyStr + '\')">Copy</button> ' +
+                        '<button class="copy-btn" onclick="copyProxy(\'' + httpProxy + '\', this)">HTTP</button> ' +
+                        '<button class="copy-btn" style="color:#bb86fc;" onclick="copyProxy(\'' + socks5Proxy + '\', this)">S5</button> ' +
                         '<button class="rotate-btn" onclick="rotateUser(\'' + u.username + '\')">Rotate</button> ' +
                         '<button class="copy-btn" onclick="toggleUser(\'' + u.username + '\')">' + (u.enabled ? 'Off' : 'On') + '</button> ' +
                         '<button class="del-btn" onclick="deleteUser(\'' + u.username + '\')">X</button>' +
@@ -185,10 +243,11 @@
             }).join('');
         }
 
-        function copyProxy(text) {
+        function copyProxy(text, btn) {
             navigator.clipboard.writeText(text).then(function() {
-                event.target.textContent = 'Copied!';
-                setTimeout(function() { event.target.textContent = 'Copy'; }, 1500);
+                var orig = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(function() { btn.textContent = orig; }, 1500);
             });
         }
 
@@ -202,7 +261,7 @@
                 var resp = await fetch('/api/users', { method: 'POST', headers: getHeaders(), body: JSON.stringify(body) });
                 var data = await resp.json();
                 if (data.error) { alert('Error: ' + data.error); return; }
-                alert('Created!\n\nUser: ' + data.username + '\nPass: ' + data.password + '\nExit IP: ' + data.exit_ip);
+                alert('Created!\n\nUser: ' + data.username + '\nPass: ' + data.password + '\n\nHTTP Exit: ' + data.exit_ip + '\nSOCKS5 Exit: ' + data.socks_exit_ip);
                 closeCreateModal();
                 loadUsers();
             } catch(e) { alert('Failed: ' + e.message); }
@@ -221,7 +280,7 @@
             try {
                 var resp = await fetch('/api/users/' + username + '/rotate', { method: 'POST', headers: getHeaders() });
                 var data = await resp.json();
-                alert('Rotated!\nNew Exit IP: ' + data.exit_ip + '\nLatency: ' + data.latency + 'ms');
+                alert('Rotated!\nHTTP Exit: ' + data.exit_ip + '\nSOCKS5 Exit: ' + data.socks_exit_ip);
                 loadUsers();
             } catch(e) { alert('Failed'); }
         }
