@@ -1,6 +1,9 @@
 services:
   - type: web
-    name: rotating-proxy
+    name: auth-proxy
     runtime: docker
     plan: free
+    envVars:
+      - key: ADMIN_KEY
+        value: admin123
     healthCheckPath: /health
