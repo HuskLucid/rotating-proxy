@@ -15,7 +15,6 @@
         .stat .num { font-size: 28px; font-weight: 700; color: #00ff88; }
         .stat .num.blue { color: #00d4ff; }
         .stat .num.orange { color: #ff8800; }
-        .stat .num.red { color: #ff4444; }
         .stat .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
         .section { padding: 20px 32px; }
         .section h2 { font-size: 16px; color: #00d4ff; margin-bottom: 12px; }
@@ -33,7 +32,12 @@
         tr:hover { background: #1a1a2e; }
         .enabled { color: #00ff88; }
         .disabled { color: #ff4444; }
-        .upstream-ip { color: #ff8800; font-weight: 600; }
+        .exit-ip { color: #ff8800; font-weight: 600; }
+        .latency { font-weight: 600; }
+        .latency.fast { color: #00ff88; }
+        .latency.medium { color: #ffaa00; }
+        .latency.slow { color: #ff4444; }
+        .proxy-str { color: #00ff88; font-weight: 600; }
         .copy-btn { background: #2a2a4a; border: none; color: #aaa; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
         .copy-btn:hover { background: #3a3a5a; color: #fff; }
         .del-btn { background: #4a2a2a; border: none; color: #ff6666; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
@@ -56,7 +60,7 @@
 <body>
     <div class="header">
         <h1>Auth Proxy Manager</h1>
-        <div class="sub">Each Proxy = Different Exit IP | Auto-rotating upstream</div>
+        <div class="sub">Each Proxy = Different Exit IP | Fast & Auto-healing</div>
     </div>
 
     <div class="stats-row">
@@ -74,7 +78,7 @@
             <button class="btn btn-green" onclick="loadUsers()" style="margin-left:8px;">Load Users</button>
         </div>
 
-        <h2>Proxy Users (Each has different exit IP)</h2>
+        <h2>Proxy Users</h2>
         <div class="controls">
             <button class="btn btn-green" onclick="openCreateModal()">+ Create New Proxy</button>
             <button class="btn" onclick="loadUsers()">Refresh</button>
@@ -86,13 +90,14 @@
                     <th>#</th>
                     <th>Proxy (ip:port:user:pass)</th>
                     <th>Exit IP</th>
+                    <th>Latency</th>
                     <th>Requests</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="userTable">
-                <tr><td colspan="6" class="loading">Click "Load Users" to start</td></tr>
+                <tr><td colspan="7" class="loading">Click "Load Users" to start</td></tr>
             </tbody>
         </table>
     </div>
@@ -101,12 +106,11 @@
         <div class="info-box">
             <h3>How it works</h3>
             <p style="font-size:12px;color:#888;">
-                1. Service fetches <strong>hundreds of free proxies</strong> from the internet<br>
-                2. Each user gets a <strong>different upstream proxy</strong> (different exit IP)<br>
-                3. If User A's exit IP is blocked, <strong>Users B, C, D still work</strong><br>
-                4. Click <strong>"Rotate"</strong> to change a user's exit IP<br>
-                5. Pool auto-refreshes every 5 minutes<br><br>
-                <strong style="color:#00ff88;">Format: ip:port:user:pass</strong>
+                1. Service fetches <strong>hundreds of fast proxies</strong> from the internet<br>
+                2. Each user gets a <strong>different exit IP</strong> (sorted by latency)<br>
+                3. If a proxy dies, it's <strong>auto-removed</strong> and user gets new one<br>
+                4. Click <strong>"Rotate"</strong> to change exit IP<br>
+                5. Pool auto-refreshes every 3 minutes
             </p>
         </div>
     </div>
@@ -154,15 +158,21 @@
         function renderUsers(userList) {
             var tbody = document.getElementById('userTable');
             if (userList.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="loading">No users yet. Create one!</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="loading">No users yet. Create one!</td></tr>';
                 return;
             }
             tbody.innerHTML = userList.map(function(u, i) {
                 var proxyStr = u.ip + ':443:' + u.username + ':' + u.password;
+                var exitIp = u.exit_ip || 'N/A';
+                var lat = u.latency || 0;
+                var latClass = lat < 500 ? 'fast' : (lat < 1000 ? 'medium' : 'slow');
+                var latText = lat > 0 ? lat.toFixed(0) + 'ms' : '-';
+
                 return '<tr>' +
                     '<td>' + (i + 1) + '</td>' +
-                    '<td style="color:#00ff88;font-weight:600;">' + proxyStr + '</td>' +
-                    '<td class="upstream-ip">' + u.upstream_ip + '</td>' +
+                    '<td class="proxy-str">' + proxyStr + '</td>' +
+                    '<td class="exit-ip">' + exitIp + '</td>' +
+                    '<td class="latency ' + latClass + '">' + latText + '</td>' +
                     '<td>' + u.requests + '</td>' +
                     '<td class="' + (u.enabled ? 'enabled' : 'disabled') + '">' + (u.enabled ? 'ACTIVE' : 'DISABLED') + '</td>' +
                     '<td>' +
@@ -192,7 +202,7 @@
                 var resp = await fetch('/api/users', { method: 'POST', headers: getHeaders(), body: JSON.stringify(body) });
                 var data = await resp.json();
                 if (data.error) { alert('Error: ' + data.error); return; }
-                alert('Created!\n\nUser: ' + data.username + '\nPass: ' + data.password + '\nExit IP: ' + data.upstream_ip);
+                alert('Created!\n\nUser: ' + data.username + '\nPass: ' + data.password + '\nExit IP: ' + data.exit_ip);
                 closeCreateModal();
                 loadUsers();
             } catch(e) { alert('Failed: ' + e.message); }
@@ -211,7 +221,7 @@
             try {
                 var resp = await fetch('/api/users/' + username + '/rotate', { method: 'POST', headers: getHeaders() });
                 var data = await resp.json();
-                alert('Rotated!\nNew Exit IP: ' + data.new_upstream_ip);
+                alert('Rotated!\nNew Exit IP: ' + data.exit_ip + '\nLatency: ' + data.latency + 'ms');
                 loadUsers();
             } catch(e) { alert('Failed'); }
         }

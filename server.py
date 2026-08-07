@@ -21,7 +21,7 @@ logger = logging.getLogger("auth-proxy")
 USERS_FILE = Path("users.json")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "admin123")
 PROXY_SOURCES = [
-    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&protocol=http",
+    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&protocol=http&timeout=3000",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
     "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
@@ -46,16 +46,18 @@ def generate_credentials() -> tuple[str, str]:
 
 class ProxyPool:
     def __init__(self):
-        self._upstream_proxies: list[str] = []
-        self._alive_proxies: list[str] = []
+        self._proxies: list[str] = []
+        self._proxy_health: dict[str, float] = {}
+        self._proxy_latency: dict[str, float] = {}
         self._last_fetch: float = 0
-        self._fetch_interval: float = 300
+        self._fetch_interval: float = 180
         self._checking = False
+        self._lock = asyncio.Lock()
 
     async def fetch_proxies(self) -> list[str]:
         proxies = []
         try:
-            timeout = aiohttp.ClientTimeout(total=10)
+            timeout = aiohttp.ClientTimeout(total=8)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 for url in PROXY_SOURCES:
                     try:
@@ -73,16 +75,17 @@ class ProxyPool:
                                         ip = parts[0].strip()
                                         port = parts[1].strip()
                                         if self._validate_ip(ip) and port.isdigit():
-                                            proxies.append(f"http://{ip}:{port}")
+                                            proxy_url = f"http://{ip}:{port}"
+                                            if proxy_url not in self._proxies:
+                                                proxies.append(proxy_url)
                     except Exception as e:
-                        logger.warning("Failed to fetch from %s: %s", url[:50], e)
+                        logger.warning("Fetch failed %s: %s", url[:40], e)
         except Exception as e:
             logger.error("Fetch error: %s", e)
 
-        unique = list(set(proxies))
-        random.shuffle(unique)
-        logger.info("Fetched %d unique proxies", len(unique))
-        return unique[:500]
+        random.shuffle(proxies)
+        logger.info("Fetched %d unique proxies", len(proxies))
+        return proxies[:300]
 
     @staticmethod
     def _validate_ip(ip: str) -> bool:
@@ -98,26 +101,30 @@ class ProxyPool:
                 return False
         return True
 
-    async def check_proxy(self, proxy: str) -> bool:
+    async def check_proxy(self, proxy: str) -> tuple[bool, float]:
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
+            start = time.time()
+            timeout = aiohttp.ClientTimeout(total=3)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get("http://httpbin.org/ip", proxy=proxy) as resp:
-                    return resp.status == 200
+                    latency = (time.time() - start) * 1000
+                    if resp.status == 200:
+                        return True, latency
         except Exception:
-            return False
+            pass
+        return False, 9999
 
-    async def check_all(self, proxies: list[str]) -> list[str]:
+    async def check_batch(self, proxies: list[str], batch_size: int = 100) -> list[str]:
         logger.info("Checking %d proxies...", len(proxies))
         start = time.time()
-
-        semaphore = asyncio.Semaphore(100)
+        semaphore = asyncio.Semaphore(batch_size)
 
         async def check_one(p):
             async with semaphore:
-                if await self.check_proxy(p):
-                    return p
-                return None
+                ok, lat = await self.check_proxy(p)
+                if ok:
+                    self._proxy_latency[p] = lat
+                return p if ok else None
 
         tasks = [check_one(p) for p in proxies]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -128,34 +135,65 @@ class ProxyPool:
         return alive
 
     async def refresh(self):
-        if self._checking:
-            return
-        self._checking = True
+        async with self._lock:
+            if self._checking:
+                return
+            self._checking = True
+
         try:
             raw = await self.fetch_proxies()
             if raw:
-                self._alive_proxies = await self.check_all(raw)
-                self._upstream_proxies = self._alive_proxies.copy()
+                alive = await self.check_batch(raw, batch_size=200)
+
+                for p in alive:
+                    if p not in self._proxy_health:
+                        self._proxy_health[p] = time.time()
+
+                for p in list(self._proxy_health.keys()):
+                    if p not in alive:
+                        del self._proxy_health[p]
+                        self._proxy_latency.pop(p, None)
+
+                self._proxies = sorted(
+                    alive,
+                    key=lambda x: self._proxy_latency.get(x, 9999)
+                )
                 self._last_fetch = time.time()
-                logger.info("Pool refreshed: %d alive proxies", len(self._alive_proxies))
+                logger.info("Pool refreshed: %d alive (latency: %d-%dms)",
+                           len(self._proxies),
+                           min(self._proxy_latency.values()) if self._proxy_latency else 0,
+                           max(self._proxy_latency.values()) if self._proxy_latency else 0)
         except Exception as e:
             logger.error("Refresh error: %s", e)
         finally:
             self._checking = False
 
     def get_upstream(self, index: int) -> Optional[str]:
-        if not self._upstream_proxies:
+        if not self._proxies:
             return None
-        return self._upstream_proxies[index % len(self._upstream_proxies)]
+        return self._proxies[index % len(self._proxies)]
 
-    def get_random_upstream(self) -> Optional[str]:
-        if not self._upstream_proxies:
-            return None
-        return random.choice(self._upstream_proxies)
+    def get_exit_ip(self, proxy: str) -> str:
+        if proxy:
+            return proxy.split("://")[1].split(":")[0]
+        return "N/A"
+
+    def get_latency(self, proxy: str) -> float:
+        return self._proxy_latency.get(proxy, 9999)
 
     @property
     def pool_size(self) -> int:
-        return len(self._upstream_proxies)
+        return len(self._proxies)
+
+    async def mark_dead(self, proxy: str):
+        async with self._lock:
+            if proxy in self._proxy_health:
+                del self._proxy_health[proxy]
+            if proxy in self._proxy_latency:
+                del self._proxy_latency[proxy]
+            if proxy in self._proxies:
+                self._proxies.remove(proxy)
+                logger.info("Removed dead proxy: %s (pool: %d)", proxy, len(self._proxies))
 
     async def run_loop(self):
         while True:
@@ -235,7 +273,7 @@ def unauthorized():
 async def pipe_streams(reader, writer):
     try:
         while True:
-            data = await reader.read(65536)
+            data = await reader.read(131072)
             if not data:
                 break
             writer.write(data)
@@ -266,28 +304,38 @@ async def handle_connect(request: web.Request) -> web.StreamResponse:
 
     logger.info("[%s] CONNECT %s:%d via %s", username, host, port, upstream)
 
+    proxy_writer = None
     try:
         upstream_host = upstream.split("://")[1].split(":")[0]
         upstream_port = int(upstream.split("://")[1].split(":")[1])
 
         proxy_reader, proxy_writer = await asyncio.wait_for(
-            asyncio.open_connection(upstream_host, upstream_port), timeout=10
+            asyncio.open_connection(upstream_host, upstream_port), timeout=5
         )
 
         connect_req = f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"
         proxy_writer.write(connect_req.encode())
         await proxy_writer.drain()
 
-        status_line = await asyncio.wait_for(proxy_reader.readline(), timeout=10)
+        status_line = await asyncio.wait_for(proxy_reader.readline(), timeout=5)
         if b"200" not in status_line:
             proxy_writer.close()
             stats.record(username, False)
-            return web.Response(status=502, text=f"Upstream CONNECT failed: {status_line.decode(errors='ignore')}")
+            await proxy_pool.mark_dead(upstream)
+            return web.Response(status=502, text="Upstream CONNECT failed")
 
+    except asyncio.TimeoutError:
+        stats.record(username, False)
+        await proxy_pool.mark_dead(upstream)
+        if proxy_writer:
+            proxy_writer.close()
+        return web.Response(status=502, text="Upstream timeout")
     except Exception as e:
         stats.record(username, False)
-        logger.warning("[%s] CONNECT via upstream failed: %s", username, e)
-        return web.Response(status=502, text=f"Upstream connect error: {e}")
+        await proxy_pool.mark_dead(upstream)
+        if proxy_writer:
+            proxy_writer.close()
+        return web.Response(status=502, text=f"Upstream error: {e}")
 
     transport = request.transport
     if transport is None:
@@ -299,11 +347,15 @@ async def handle_connect(request: web.Request) -> web.StreamResponse:
     response.force_close()
     await response.prepare(request)
 
-    await asyncio.gather(
-        pipe_streams(proxy_reader, transport),
-        pipe_streams(transport, proxy_writer),
-        return_exceptions=True,
-    )
+    try:
+        await asyncio.gather(
+            pipe_streams(proxy_reader, transport),
+            pipe_streams(transport, proxy_writer),
+            return_exceptions=True,
+        )
+    except Exception:
+        pass
+
     proxy_writer.close()
     stats.record(username, True)
     return response
@@ -323,7 +375,7 @@ async def handle_forward(request: web.Request) -> web.StreamResponse:
     logger.info("[%s] %s %s via %s", username, request.method, url[:80], upstream or "direct")
 
     try:
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             body = await request.read()
             headers = {
@@ -355,6 +407,8 @@ async def handle_forward(request: web.Request) -> web.StreamResponse:
                 return web.Response(status=resp.status, headers=resp_headers, body=resp_body)
     except Exception as e:
         stats.record(username, False)
+        if upstream:
+            await proxy_pool.mark_dead(upstream)
         return web.Response(status=502, text=f"Forward error: {e}")
 
 
@@ -391,9 +445,7 @@ async def handle_api_create_user(request: web.Request) -> web.Response:
 
     hostname = get_hostname()
     upstream = proxy_pool.get_upstream(upstream_index)
-    upstream_ip = "N/A"
-    if upstream:
-        upstream_ip = upstream.split("://")[1].split(":")[0]
+    exit_ip = proxy_pool.get_exit_ip(upstream) if upstream else "N/A"
 
     return web.json_response({
         "status": "ok",
@@ -401,7 +453,7 @@ async def handle_api_create_user(request: web.Request) -> web.Response:
         "password": custom_pass,
         "ip": hostname.split(":")[0],
         "port": 443,
-        "upstream_ip": upstream_ip,
+        "exit_ip": exit_ip,
         "proxy": f"http://{custom_user}:{custom_pass}@{hostname}",
     })
 
@@ -430,16 +482,16 @@ async def handle_api_list_users(request: web.Request) -> web.Response:
     for uname, udata in users.items():
         upstream_index = udata.get("upstream_index", 0)
         upstream = proxy_pool.get_upstream(upstream_index)
-        upstream_ip = "N/A"
-        if upstream:
-            upstream_ip = upstream.split("://")[1].split(":")[0]
+        exit_ip = proxy_pool.get_exit_ip(upstream) if upstream else "N/A"
+        latency = proxy_pool.get_latency(upstream) if upstream else 0
 
         user_list.append({
             "username": uname,
             "password": udata["password"],
             "ip": hostname.split(":")[0],
             "port": 443,
-            "upstream_ip": upstream_ip,
+            "exit_ip": exit_ip,
+            "latency": round(latency, 1),
             "proxy": f"http://{uname}:{udata['password']}@{hostname}",
             "enabled": udata.get("enabled", True),
             "created": udata.get("created", 0),
@@ -476,26 +528,39 @@ async def handle_api_rotate_user(request: web.Request) -> web.Response:
     if username not in users:
         return web.json_response({"error": "User not found"}, status=404)
 
-    new_index = random.randint(0, max(proxy_pool.pool_size - 1, 0))
+    if proxy_pool.pool_size == 0:
+        return web.json_response({"error": "No proxies in pool"}, status=503)
+
+    new_index = random.randint(0, proxy_pool.pool_size - 1)
     users[username]["upstream_index"] = new_index
     save_users(users)
 
     upstream = proxy_pool.get_upstream(new_index)
-    upstream_ip = upstream.split("://")[1].split(":")[0] if upstream else "N/A"
+    exit_ip = proxy_pool.get_exit_ip(upstream) if upstream else "N/A"
+    latency = proxy_pool.get_latency(upstream) if upstream else 0
 
     return web.json_response({
         "status": "ok",
         "username": username,
-        "new_upstream_ip": upstream_ip,
+        "exit_ip": exit_ip,
+        "latency": round(latency, 1),
     })
 
 
 async def handle_api_pool(request: web.Request) -> web.Response:
+    proxies_info = []
+    for p in proxy_pool._proxies[:50]:
+        proxies_info.append({
+            "proxy": p,
+            "exit_ip": proxy_pool.get_exit_ip(p),
+            "latency": round(proxy_pool.get_latency(p), 1),
+        })
+
     return web.json_response({
         "status": "ok",
         "pool_size": proxy_pool.pool_size,
         "last_fetch": proxy_pool._last_fetch,
-        "alive": proxy_pool._alive_proxies[:20],
+        "proxies": proxies_info,
     })
 
 
