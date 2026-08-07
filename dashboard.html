@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auth Proxy Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }
+        .header { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 20px 32px; border-bottom: 1px solid #2a2a4a; }
+        .header h1 { font-size: 22px; color: #00d4ff; }
+        .header .sub { font-size: 12px; color: #666; margin-top: 4px; }
+        .stats-row { display: flex; gap: 20px; padding: 16px 32px; background: #111118; border-bottom: 1px solid #1a1a3a; flex-wrap: wrap; }
+        .stat { text-align: center; min-width: 100px; }
+        .stat .num { font-size: 28px; font-weight: 700; color: #00ff88; }
+        .stat .num.blue { color: #00d4ff; }
+        .stat .num.orange { color: #ff8800; }
+        .stat .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+        .section { padding: 20px 32px; }
+        .section h2 { font-size: 16px; color: #00d4ff; margin-bottom: 12px; }
+        .controls { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+        .btn { background: linear-gradient(135deg, #00d4ff, #0099cc); color: #000; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+        .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,212,255,0.3); }
+        .btn-green { background: linear-gradient(135deg, #00ff88, #00cc6a); }
+        .btn-red { background: linear-gradient(135deg, #ff4444, #cc2222); }
+        .btn-orange { background: linear-gradient(135deg, #ff8800, #cc6600); }
+        input { background: #1a1a2e; border: 1px solid #333; color: #e0e0e0; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+        input:focus { outline: none; border-color: #00d4ff; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #1a1a2e; padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #888; border-bottom: 2px solid #2a2a4a; }
+        td { padding: 10px 14px; border-bottom: 1px solid #1a1a2a; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+        tr:hover { background: #1a1a2e; }
+        .proxy-url { color: #00ff88; font-weight: 600; word-break: break-all; }
+        .enabled { color: #00ff88; }
+        .disabled { color: #ff4444; }
+        .copy-btn { background: #2a2a4a; border: none; color: #aaa; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+        .copy-btn:hover { background: #3a3a5a; color: #fff; }
+        .del-btn { background: #4a2a2a; border: none; color: #ff6666; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+        .del-btn:hover { background: #6a3a3a; }
+        .loading { text-align: center; padding: 40px; color: #888; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 24px; width: 400px; }
+        .modal-content h3 { margin-bottom: 16px; color: #00d4ff; }
+        .modal-content input { width: 100%; margin-bottom: 12px; }
+        .modal-content .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+        .info-box { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+        .info-box h3 { color: #00d4ff; margin-bottom: 8px; font-size: 14px; }
+        .info-box code { background: #0a0a0f; padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #00ff88; }
+        .info-box pre { background: #0a0a0f; padding: 10px; border-radius: 6px; margin-top: 8px; overflow-x: auto; font-size: 12px; color: #aaa; }
+        .admin-key { background: #1a1a2e; border: 1px solid #333; color: #ff8800; padding: 8px 12px; border-radius: 6px; font-size: 13px; width: 300px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Auth Proxy Manager</h1>
+        <div class="sub">Single IP - Multiple User:Pass Proxies | Your Own Proxy Server</div>
+    </div>
+
+    <div class="stats-row">
+        <div class="stat"><div class="num" id="userCount">0</div><div class="label">Users</div></div>
+        <div class="stat"><div class="num blue" id="totalReqs">0</div><div class="label">Requests</div></div>
+        <div class="stat"><div class="num orange" id="successRate">0%</div><div class="label">Success</div></div>
+        <div class="stat"><div class="num" id="uptime">0h 0m</div><div class="label">Uptime</div></div>
+    </div>
+
+    <div class="section">
+        <div class="info-box">
+            <h3>Admin Access</h3>
+            <p style="font-size:12px;color:#888;margin-bottom:8px;">Enter your admin key (default: admin123):</p>
+            <input type="password" id="adminKey" class="admin-key" placeholder="Enter admin key..." value="admin123">
+            <button class="btn btn-green" onclick="loadUsers()" style="margin-left:8px;">Load Users</button>
+        </div>
+
+        <h2>Proxy Users</h2>
+        <div class="controls">
+            <button class="btn btn-green" onclick="openCreateModal()">+ Create New Proxy</button>
+            <button class="btn" onclick="loadUsers()">Refresh</button>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Username</th>
+                    <th>Proxy URL</th>
+                    <th>Requests</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="userTable">
+                <tr><td colspan="6" class="loading">Click "Load Users" to start</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="info-box">
+            <h3>Usage</h3>
+            <pre id="apiExample">curl -x http://user_xxx:passxxx@YOUR-SERVICE.onrender.com:8080 http://httpbin.org/ip</pre>
+        </div>
+    </div>
+
+    <div class="modal" id="createModal">
+        <div class="modal-content">
+            <h3>Create New Proxy User</h3>
+            <input type="text" id="newUsername" placeholder="Username (auto if empty)">
+            <input type="text" id="newPassword" placeholder="Password (auto if empty)">
+            <div class="btn-row">
+                <button class="btn" onclick="closeCreateModal()">Cancel</button>
+                <button class="btn btn-green" onclick="createUser()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function getHeaders() {
+            const adminKey = document.getElementById('adminKey').value;
+            return { 'Authorization': `Bearer ${adminKey}`, 'Content-Type': 'application/json' };
+        }
+
+        async function loadUsers() {
+            try {
+                const resp = await fetch('/api/users', { headers: getHeaders() });
+                const data = await resp.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                renderUsers(data.users || []);
+                document.getElementById('userCount').textContent = data.total || 0;
+            } catch(e) {
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const resp = await fetch('/api/stats');
+                const data = await resp.json();
+                document.getElementById('totalReqs').textContent = data.total_requests || 0;
+                document.getElementById('successRate').textContent = (data.success_rate || 0) + '%';
+                const hrs = Math.floor((data.uptime_seconds || 0) / 3600);
+                const mins = Math.floor(((data.uptime_seconds || 0) % 3600) / 60);
+                document.getElementById('uptime').textContent = hrs + 'h ' + mins + 'm';
+            } catch(e) {}
+        }
+
+        function renderUsers(userList) {
+            const tbody = document.getElementById('userTable');
+            if (userList.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="loading">No users yet. Create one!</td></tr>';
+                return;
+            }
+            tbody.innerHTML = userList.map((u, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${u.username}</td>
+                    <td class="proxy-url">${u.proxy}</td>
+                    <td>${u.requests}</td>
+                    <td class="${u.enabled ? 'enabled' : 'disabled'}">${u.enabled ? 'ACTIVE' : 'DISABLED'}</td>
+                    <td>
+                        <button class="copy-btn" onclick="copyProxy('${u.proxy}')">Copy</button>
+                        <button class="copy-btn" onclick="toggleUser('${u.username}')">${u.enabled ? 'Disable' : 'Enable'}</button>
+                        <button class="del-btn" onclick="deleteUser('${u.username}')">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function copyProxy(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                event.target.textContent = 'Copied!';
+                setTimeout(() => event.target.textContent = 'Copy', 1500);
+            });
+        }
+
+        async function createUser() {
+            const username = document.getElementById('newUsername').value;
+            const password = document.getElementById('newPassword').value;
+            const body = {};
+            if (username) body.username = username;
+            if (password) body.password = password;
+
+            try {
+                const resp = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                alert('Created!\n\nProxy: ' + data.proxy + '\n\nUser: ' + data.username + '\nPass: ' + data.password);
+                closeCreateModal();
+                loadUsers();
+            } catch(e) {
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        async function deleteUser(username) {
+            if (!confirm('Delete user ' + username + '?')) return;
+            try {
+                await fetch('/api/users/' + username, { method: 'DELETE', headers: getHeaders() });
+                loadUsers();
+            } catch(e) {
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        async function toggleUser(username) {
+            try {
+                await fetch('/api/users/' + username + '/toggle', { method: 'POST', headers: getHeaders() });
+                loadUsers();
+            } catch(e) {
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        function openCreateModal() {
+            document.getElementById('createModal').classList.add('active');
+            document.getElementById('newUsername').value = '';
+            document.getElementById('newPassword').value = '';
+        }
+
+        function closeCreateModal() {
+            document.getElementById('createModal').classList.remove('active');
+        }
+
+        loadStats();
+        setInterval(loadStats, 30000);
+    </script>
+</body>
+</html>
