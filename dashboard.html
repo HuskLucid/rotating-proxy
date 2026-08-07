@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rotating Proxy Service</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }
+        .header { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 20px 32px; border-bottom: 1px solid #2a2a4a; }
+        .header h1 { font-size: 22px; color: #00d4ff; margin-bottom: 4px; }
+        .header .sub { font-size: 12px; color: #666; }
+        .stats-row { display: flex; gap: 20px; padding: 16px 32px; background: #111118; border-bottom: 1px solid #1a1a3a; flex-wrap: wrap; }
+        .stat { text-align: center; min-width: 100px; }
+        .stat .num { font-size: 28px; font-weight: 700; color: #00ff88; }
+        .stat .num.blue { color: #00d4ff; }
+        .stat .num.orange { color: #ff8800; }
+        .stat .num.purple { color: #aa66ff; }
+        .stat .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+        .controls { padding: 12px 32px; background: #0d0d14; border-bottom: 1px solid #1a1a3a; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .btn { background: linear-gradient(135deg, #00d4ff, #0099cc); color: #000; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+        .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,212,255,0.3); }
+        .btn-green { background: linear-gradient(135deg, #00ff88, #00cc6a); }
+        .btn-orange { background: linear-gradient(135deg, #ff8800, #cc6600); }
+        .btn-red { background: linear-gradient(135deg, #ff4444, #cc2222); }
+        .btn-sm { padding: 5px 10px; font-size: 11px; }
+        input, select { background: #1a1a2e; border: 1px solid #333; color: #e0e0e0; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+        input:focus, select:focus { outline: none; border-color: #00d4ff; }
+        .table-wrap { padding: 0 32px 32px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th { background: #1a1a2e; padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #888; border-bottom: 2px solid #2a2a4a; position: sticky; top: 0; }
+        td { padding: 8px 14px; border-bottom: 1px solid #1a1a2a; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+        tr:hover { background: #1a1a2e; }
+        .alive { color: #00ff88; font-weight: 600; }
+        .dead { color: #ff4444; }
+        .proxy-addr { color: #00d4ff; font-weight: 600; }
+        .copy-btn { background: #2a2a4a; border: none; color: #aaa; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+        .copy-btn:hover { background: #3a3a5a; color: #fff; }
+        .loading { text-align: center; padding: 40px; color: #888; }
+        .info-box { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 8px; padding: 16px; margin: 16px 32px; }
+        .info-box h3 { color: #00d4ff; margin-bottom: 8px; font-size: 14px; }
+        .info-box code { background: #0a0a0f; padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #00ff88; }
+        .info-box pre { background: #0a0a0f; padding: 10px; border-radius: 6px; margin-top: 8px; overflow-x: auto; font-size: 12px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Rotating Proxy Service</h1>
+        <div class="sub">Auto-rotating proxies - every 5 min fresh IPs</div>
+    </div>
+
+    <div class="stats-row">
+        <div class="stat"><div class="num" id="aliveCount">0</div><div class="label">Alive</div></div>
+        <div class="stat"><div class="num blue" id="totalCount">0</div><div class="label">Total</div></div>
+        <div class="stat"><div class="num orange" id="avgLatency">0</div><div class="label">Avg Latency</div></div>
+        <div class="stat"><div class="num purple" id="requests">0</div><div class="label">Requests</div></div>
+        <div class="stat"><div class="num" id="uptime">0</div><div class="label">Uptime</div></div>
+    </div>
+
+    <div class="controls">
+        <button class="btn btn-green" onclick="getProxy()">Get Random Proxy</button>
+        <button class="btn btn-orange" onclick="copyAllAlive()">Copy All Alive</button>
+        <button class="btn" onclick="refreshData()">Refresh</button>
+        <button class="btn btn-red btn-sm" onclick="manualRefresh()">Force Re-fetch</button>
+        <span style="font-size:11px;color:#666;">Auto-refresh: 30s | Rotation: 5 min</span>
+    </div>
+
+    <div class="info-box">
+        <h3>API Usage</h3>
+        <p style="font-size:12px;color:#888;">
+            <code>GET /get</code> - Get one random alive proxy |
+            <code>GET /get/5</code> - Get 5 proxies |
+            <code>GET /proxies</code> - List all proxies |
+            <code>GET /refresh</code> - Force refresh
+        </p>
+        <pre id="apiExample">curl https://YOUR_SERVICE.onrender.com/get</pre>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>IP Address</th>
+                    <th>Port</th>
+                    <th>Protocol</th>
+                    <th>Source</th>
+                    <th>Latency</th>
+                    <th>Uptime</th>
+                    <th>Used</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody id="proxyTable">
+                <tr><td colspan="10" class="loading">Loading proxies...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let allProxies = [];
+        let serviceUrl = window.location.origin;
+
+        document.getElementById('apiExample').textContent = `curl ${serviceUrl}/get`;
+
+        async function refreshData() {
+            try {
+                const resp = await fetch('/proxies');
+                const data = await resp.json();
+                allProxies = data.proxies || [];
+                document.getElementById('aliveCount').textContent = data.alive || 0;
+                document.getElementById('totalCount').textContent = data.total || 0;
+                document.getElementById('avgLatency').textContent = (data.avg_latency || 0) + 'ms';
+
+                const statsResp = await fetch('/stats');
+                const stats = await statsResp.json();
+                document.getElementById('requests').textContent = stats.total_requests || 0;
+                const uptimeSec = stats.uptime_seconds || 0;
+                const hrs = Math.floor(uptimeSec / 3600);
+                const mins = Math.floor((uptimeSec % 3600) / 60);
+                document.getElementById('uptime').textContent = hrs + 'h ' + mins + 'm';
+
+                renderTable();
+            } catch(e) {
+                console.error('Refresh failed:', e);
+            }
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('proxyTable');
+            const aliveProxies = allProxies.filter(p => p.is_alive);
+            const deadProxies = allProxies.filter(p => !p.is_alive).slice(0, 30);
+            const display = [...aliveProxies, ...deadProxies];
+
+            if (display.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">No proxies found. Waiting for fetch...</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = display.map((p, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td class="proxy-addr">${p.ip}</td>
+                    <td>${p.port}</td>
+                    <td>${p.protocol.toUpperCase()}</td>
+                    <td>${p.source}</td>
+                    <td>${p.latency_ms.toFixed(0)}ms</td>
+                    <td>${(p.uptime * 100).toFixed(1)}%</td>
+                    <td>${p.times_used}</td>
+                    <td class="${p.is_alive ? 'alive' : 'dead'}">${p.is_alive ? 'ALIVE' : 'DEAD'}</td>
+                    <td><button class="copy-btn" onclick="copyProxy('${p.protocol}://${p.ip}:${p.port}')">Copy</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function copyProxy(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                event.target.textContent = 'Copied!';
+                setTimeout(() => event.target.textContent = 'Copy', 1500);
+            });
+        }
+
+        async function getProxy() {
+            try {
+                const resp = await fetch('/get');
+                const data = await resp.json();
+                if (data.status === 'ok') {
+                    const text = `${data.proxy}`;
+                    navigator.clipboard.writeText(text).then(() => {
+                        alert(`Proxy copied!\n\n${text}\n\nIP: ${data.ip}:${data.port}\nLatency: ${data.latency_ms}ms`);
+                    });
+                } else {
+                    alert('No alive proxies available!');
+                }
+            } catch(e) {
+                alert('Error getting proxy: ' + e.message);
+            }
+        }
+
+        function copyAllAlive() {
+            const alive = allProxies.filter(p => p.is_alive);
+            if (alive.length === 0) {
+                alert('No alive proxies!');
+                return;
+            }
+            const lines = alive.map(p => `${p.protocol}://${p.ip}:${p.port}`).join('\n');
+            navigator.clipboard.writeText(lines).then(() => {
+                alert(`Copied ${alive.length} alive proxies!`);
+            });
+        }
+
+        async function refreshData() {
+            try {
+                const resp = await fetch('/proxies');
+                const data = await resp.json();
+                allProxies = data.proxies || [];
+                document.getElementById('aliveCount').textContent = data.alive || 0;
+                document.getElementById('totalCount').textContent = data.total || 0;
+                document.getElementById('avgLatency').textContent = (data.avg_latency || 0) + 'ms';
+
+                const statsResp = await fetch('/stats');
+                const stats = await statsResp.json();
+                document.getElementById('requests').textContent = stats.total_requests || 0;
+                const uptimeSec = stats.uptime_seconds || 0;
+                const hrs = Math.floor(uptimeSec / 3600);
+                const mins = Math.floor((uptimeSec % 3600) / 60);
+                document.getElementById('uptime').textContent = hrs + 'h ' + mins + 'm';
+
+                renderTable();
+            } catch(e) {
+                console.error('Refresh failed:', e);
+            }
+        }
+
+        async function manualRefresh() {
+            try {
+                await fetch('/refresh');
+                alert('Refresh started! Wait 30 seconds for results.');
+            } catch(e) {
+                alert('Refresh failed: ' + e.message);
+            }
+        }
+
+        refreshData();
+        setInterval(refreshData, 30000);
+    </script>
+</body>
+</html>

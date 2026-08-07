@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: rotating-proxy
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
