@@ -15,6 +15,7 @@
         .stat .num { font-size: 28px; font-weight: 700; color: #00ff88; }
         .stat .num.blue { color: #00d4ff; }
         .stat .num.orange { color: #ff8800; }
+        .stat .num.red { color: #ff4444; }
         .stat .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
         .section { padding: 20px 32px; }
         .section h2 { font-size: 16px; color: #00d4ff; margin-bottom: 12px; }
@@ -30,13 +31,15 @@
         th { background: #1a1a2e; padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #888; border-bottom: 2px solid #2a2a4a; }
         td { padding: 10px 14px; border-bottom: 1px solid #1a1a2a; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
         tr:hover { background: #1a1a2e; }
-        .proxy-url { color: #00ff88; font-weight: 600; word-break: break-all; }
         .enabled { color: #00ff88; }
         .disabled { color: #ff4444; }
+        .upstream-ip { color: #ff8800; font-weight: 600; }
         .copy-btn { background: #2a2a4a; border: none; color: #aaa; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
         .copy-btn:hover { background: #3a3a5a; color: #fff; }
         .del-btn { background: #4a2a2a; border: none; color: #ff6666; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
         .del-btn:hover { background: #6a3a3a; }
+        .rotate-btn { background: #2a2a4a; border: none; color: #ff8800; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+        .rotate-btn:hover { background: #3a3a5a; }
         .loading { text-align: center; padding: 40px; color: #888; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
         .modal.active { display: flex; }
@@ -46,21 +49,20 @@
         .modal-content .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
         .info-box { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
         .info-box h3 { color: #00d4ff; margin-bottom: 8px; font-size: 14px; }
-        .info-box code { background: #0a0a0f; padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #00ff88; }
-        .info-box pre { background: #0a0a0f; padding: 10px; border-radius: 6px; margin-top: 8px; overflow-x: auto; font-size: 12px; color: #aaa; }
+        .info-box pre { background: #0a0a0f; padding: 10px; border-radius: 6px; margin-top: 8px; overflow-x: auto; font-size: 12px; color: #aaa; white-space: pre-wrap; word-break: break-all; }
         .admin-key { background: #1a1a2e; border: 1px solid #333; color: #ff8800; padding: 8px 12px; border-radius: 6px; font-size: 13px; width: 300px; }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>Auth Proxy Manager</h1>
-        <div class="sub">Single IP - Multiple User:Pass Proxies | Your Own Proxy Server</div>
+        <div class="sub">Each Proxy = Different Exit IP | Auto-rotating upstream</div>
     </div>
 
     <div class="stats-row">
         <div class="stat"><div class="num" id="userCount">0</div><div class="label">Users</div></div>
-        <div class="stat"><div class="num blue" id="totalReqs">0</div><div class="label">Requests</div></div>
-        <div class="stat"><div class="num orange" id="successRate">0%</div><div class="label">Success</div></div>
+        <div class="stat"><div class="num blue" id="poolSize">0</div><div class="label">Proxy Pool</div></div>
+        <div class="stat"><div class="num orange" id="totalReqs">0</div><div class="label">Requests</div></div>
         <div class="stat"><div class="num" id="uptime">0h 0m</div><div class="label">Uptime</div></div>
     </div>
 
@@ -72,7 +74,7 @@
             <button class="btn btn-green" onclick="loadUsers()" style="margin-left:8px;">Load Users</button>
         </div>
 
-        <h2>Proxy Users</h2>
+        <h2>Proxy Users (Each has different exit IP)</h2>
         <div class="controls">
             <button class="btn btn-green" onclick="openCreateModal()">+ Create New Proxy</button>
             <button class="btn" onclick="loadUsers()">Refresh</button>
@@ -82,8 +84,8 @@
             <thead>
                 <tr>
                     <th>#</th>
-                    <th>Username</th>
-                    <th>Proxy URL</th>
+                    <th>Proxy (ip:port:user:pass)</th>
+                    <th>Exit IP</th>
                     <th>Requests</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -97,8 +99,15 @@
 
     <div class="section">
         <div class="info-box">
-            <h3>Usage</h3>
-            <pre id="apiExample">curl -x http://user_xxx:passxxx@YOUR-SERVICE.onrender.com:8080 http://httpbin.org/ip</pre>
+            <h3>How it works</h3>
+            <p style="font-size:12px;color:#888;">
+                1. Service fetches <strong>hundreds of free proxies</strong> from the internet<br>
+                2. Each user gets a <strong>different upstream proxy</strong> (different exit IP)<br>
+                3. If User A's exit IP is blocked, <strong>Users B, C, D still work</strong><br>
+                4. Click <strong>"Rotate"</strong> to change a user's exit IP<br>
+                5. Pool auto-refreshes every 5 minutes<br><br>
+                <strong style="color:#00ff88;">Format: ip:port:user:pass</strong>
+            </p>
         </div>
     </div>
 
@@ -116,109 +125,95 @@
 
     <script>
         function getHeaders() {
-            const adminKey = document.getElementById('adminKey').value;
-            return { 'Authorization': `Bearer ${adminKey}`, 'Content-Type': 'application/json' };
+            var adminKey = document.getElementById('adminKey').value;
+            return { 'Authorization': 'Bearer ' + adminKey, 'Content-Type': 'application/json' };
         }
 
         async function loadUsers() {
             try {
-                const resp = await fetch('/api/users', { headers: getHeaders() });
-                const data = await resp.json();
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
+                var resp = await fetch('/api/users', { headers: getHeaders() });
+                var data = await resp.json();
+                if (data.error) { alert('Error: ' + data.error); return; }
                 renderUsers(data.users || []);
                 document.getElementById('userCount').textContent = data.total || 0;
-            } catch(e) {
-                alert('Failed: ' + e.message);
-            }
+            } catch(e) { alert('Failed: ' + e.message); }
         }
 
         async function loadStats() {
             try {
-                const resp = await fetch('/api/stats');
-                const data = await resp.json();
+                var resp = await fetch('/api/stats');
+                var data = await resp.json();
                 document.getElementById('totalReqs').textContent = data.total_requests || 0;
-                document.getElementById('successRate').textContent = (data.success_rate || 0) + '%';
-                const hrs = Math.floor((data.uptime_seconds || 0) / 3600);
-                const mins = Math.floor(((data.uptime_seconds || 0) % 3600) / 60);
+                document.getElementById('poolSize').textContent = data.pool_size || 0;
+                var hrs = Math.floor((data.uptime_seconds || 0) / 3600);
+                var mins = Math.floor(((data.uptime_seconds || 0) % 3600) / 60);
                 document.getElementById('uptime').textContent = hrs + 'h ' + mins + 'm';
             } catch(e) {}
         }
 
         function renderUsers(userList) {
-            const tbody = document.getElementById('userTable');
+            var tbody = document.getElementById('userTable');
             if (userList.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="6" class="loading">No users yet. Create one!</td></tr>';
                 return;
             }
-            tbody.innerHTML = userList.map((u, i) => `
-                <tr>
-                    <td>${i + 1}</td>
-                    <td>${u.username}</td>
-                    <td class="proxy-url">${u.proxy}</td>
-                    <td>${u.requests}</td>
-                    <td class="${u.enabled ? 'enabled' : 'disabled'}">${u.enabled ? 'ACTIVE' : 'DISABLED'}</td>
-                    <td>
-                        <button class="copy-btn" onclick="copyProxy('${u.proxy}')">Copy</button>
-                        <button class="copy-btn" onclick="toggleUser('${u.username}')">${u.enabled ? 'Disable' : 'Enable'}</button>
-                        <button class="del-btn" onclick="deleteUser('${u.username}')">Delete</button>
-                    </td>
-                </tr>
-            `).join('');
+            tbody.innerHTML = userList.map(function(u, i) {
+                var proxyStr = u.ip + ':443:' + u.username + ':' + u.password;
+                return '<tr>' +
+                    '<td>' + (i + 1) + '</td>' +
+                    '<td style="color:#00ff88;font-weight:600;">' + proxyStr + '</td>' +
+                    '<td class="upstream-ip">' + u.upstream_ip + '</td>' +
+                    '<td>' + u.requests + '</td>' +
+                    '<td class="' + (u.enabled ? 'enabled' : 'disabled') + '">' + (u.enabled ? 'ACTIVE' : 'DISABLED') + '</td>' +
+                    '<td>' +
+                        '<button class="copy-btn" onclick="copyProxy(\'' + proxyStr + '\')">Copy</button> ' +
+                        '<button class="rotate-btn" onclick="rotateUser(\'' + u.username + '\')">Rotate</button> ' +
+                        '<button class="copy-btn" onclick="toggleUser(\'' + u.username + '\')">' + (u.enabled ? 'Off' : 'On') + '</button> ' +
+                        '<button class="del-btn" onclick="deleteUser(\'' + u.username + '\')">X</button>' +
+                    '</td>' +
+                '</tr>';
+            }).join('');
         }
 
         function copyProxy(text) {
-            navigator.clipboard.writeText(text).then(() => {
+            navigator.clipboard.writeText(text).then(function() {
                 event.target.textContent = 'Copied!';
-                setTimeout(() => event.target.textContent = 'Copy', 1500);
+                setTimeout(function() { event.target.textContent = 'Copy'; }, 1500);
             });
         }
 
         async function createUser() {
-            const username = document.getElementById('newUsername').value;
-            const password = document.getElementById('newPassword').value;
-            const body = {};
+            var username = document.getElementById('newUsername').value;
+            var password = document.getElementById('newPassword').value;
+            var body = {};
             if (username) body.username = username;
             if (password) body.password = password;
-
             try {
-                const resp = await fetch('/api/users', {
-                    method: 'POST',
-                    headers: getHeaders(),
-                    body: JSON.stringify(body),
-                });
-                const data = await resp.json();
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
-                alert('Created!\n\nProxy: ' + data.proxy + '\n\nUser: ' + data.username + '\nPass: ' + data.password);
+                var resp = await fetch('/api/users', { method: 'POST', headers: getHeaders(), body: JSON.stringify(body) });
+                var data = await resp.json();
+                if (data.error) { alert('Error: ' + data.error); return; }
+                alert('Created!\n\nUser: ' + data.username + '\nPass: ' + data.password + '\nExit IP: ' + data.upstream_ip);
                 closeCreateModal();
                 loadUsers();
-            } catch(e) {
-                alert('Failed: ' + e.message);
-            }
+            } catch(e) { alert('Failed: ' + e.message); }
         }
 
         async function deleteUser(username) {
-            if (!confirm('Delete user ' + username + '?')) return;
-            try {
-                await fetch('/api/users/' + username, { method: 'DELETE', headers: getHeaders() });
-                loadUsers();
-            } catch(e) {
-                alert('Failed: ' + e.message);
-            }
+            if (!confirm('Delete ' + username + '?')) return;
+            try { await fetch('/api/users/' + username, { method: 'DELETE', headers: getHeaders() }); loadUsers(); } catch(e) { alert('Failed'); }
         }
 
         async function toggleUser(username) {
+            try { await fetch('/api/users/' + username + '/toggle', { method: 'POST', headers: getHeaders() }); loadUsers(); } catch(e) { alert('Failed'); }
+        }
+
+        async function rotateUser(username) {
             try {
-                await fetch('/api/users/' + username + '/toggle', { method: 'POST', headers: getHeaders() });
+                var resp = await fetch('/api/users/' + username + '/rotate', { method: 'POST', headers: getHeaders() });
+                var data = await resp.json();
+                alert('Rotated!\nNew Exit IP: ' + data.new_upstream_ip);
                 loadUsers();
-            } catch(e) {
-                alert('Failed: ' + e.message);
-            }
+            } catch(e) { alert('Failed'); }
         }
 
         function openCreateModal() {
